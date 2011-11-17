@@ -1,11 +1,14 @@
 <?php
-
+// $Id$
 /**
  * @file
  * View for listing nodes by workflow state.
  */
 
-function workflow_views_default_views() {
+/**
+ * Implements hook_views_default_views().
+ */
+function workflow_views_views_default_views() {
   $view = new view;
   $view->name = 'workflow_summary';
   $view->description = 'See which posts are in which workflow state.';

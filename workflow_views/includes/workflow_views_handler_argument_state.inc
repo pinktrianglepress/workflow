@@ -1,5 +1,5 @@
 <?php
-
+// $Id$
 /**
  * @file
  * Provide views argument handler for workflow.module.
@@ -29,14 +29,19 @@ class views_handler_argument_workflow_state extends views_handler_argument {
     return $this->workflow_states($this->argument);
   }
 
+  /**
+   * @todo Please document this function.
+   * @see http://drupal.org/node/1354
+   */
   function workflow_states($sid) {
     if (empty($sid)) {
       return t('No state');
     }
-
     static $states;
     if (!isset($states)) {
-      $states = workflow_get_states();
+      foreach (workflow_get_workflow_states() as $state) {
+        $states[$state->sid] = check_plain($state->state);
+      }
     }
     $output = $states[$sid];
     if (empty($output)) {
