@@ -47,18 +47,17 @@ function workflow_select_next_state_action($node, $context) {
   // If this action is being fired because it's attached to a workflow transition
   // then the node's new state (now its current state) should be in $node->workflow
   // because that is where the value from the workflow form field is stored;
-  // otherwise the current state is placed in $node->_workflow by our nodeapi load.
+  // otherwise the current state is placed in $node->workflow by our nodeapi load.
   if (!isset($node->nid)) {
     watchdog('workflow', 'Unable to get current node id state of node - node is not yet saved.');
     return;
   }
-  if (!isset($node->workflow) && !isset($node->_workflow)) {
+  if (!isset($node->workflow)) {
     watchdog('workflow', 'Unable to get current workflow state of node %nid.',
       array('%nid' => $node->nid));
     return;
   }
-  $current_state = isset($node->workflow) ? $node->workflow : $node->_workflow;
-  // TODO why do we have both of these? Is it not time to standardize on one or the other?
+  $current_state = $node->workflow;
   $new_state = $current_state;
   // Get the node's new state.
   $choices = workflow_field_choices($node);
@@ -146,31 +145,32 @@ function workflow_select_given_state_action_submit($form_id, $form_state) {
  * Expose each transition as a hook.
  */
 function workflow_actions_trigger_info() {
+  $states = array();
   foreach (workflow_get_workflow_states() as $data) {
     $states[$data->sid] = check_plain($data->state);
   }
-  if (!$states) {
+  if (empty($states)) {
     return array();
   }
   $trigger_page = drupal_substr($_GET['q'], 0, 28) == 'admin/structure/trigger/workflow';
   // TODO these should be pulled into their own DB function calls.
   if ($trigger_page && $wid = arg(4)) {
-    $result = db_query("SELECT tm.type, w.wid, w.name, ws.state, wt.tid, wt.sid, wt.target_sid " .
-      "FROM {workflow_type_map} tm " .
-      "LEFT JOIN {workflows} w ON tm.wid = w.wid " .
-      "LEFT JOIN {workflow_states} ws ON w.wid = ws.wid " .
-      "LEFT JOIN {workflow_transitions} wt ON ws.sid = wt.sid " .
-      "WHERE w.wid = :wid AND ws.status = 1 AND wt.target_sid IS NOT NULL " .
-      "ORDER BY tm.type, ws.weight", array(':wid' => $wid));
+    $result = db_query('SELECT tm.type, w.wid, w.name, ws.state, wt.tid, wt.sid, wt.target_sid ' .
+      'FROM {workflow_type_map} tm ' .
+      'LEFT JOIN {workflows} w ON tm.wid = w.wid ' .
+      'LEFT JOIN {workflow_states} ws ON w.wid = ws.wid ' .
+      'LEFT JOIN {workflow_transitions} wt ON ws.sid = wt.sid ' .
+      'WHERE w.wid = :wid AND ws.status = 1 AND wt.target_sid IS NOT NULL ' .
+      'ORDER BY tm.type, ws.weight', array(':wid' => $wid));
   }
   else {
-    $result = db_query("SELECT tm.type, w.wid, w.name, ws.state, wt.tid, wt.sid, wt.target_sid " .
-    "FROM {workflow_type_map} tm " .
-    "LEFT JOIN {workflows} w ON tm.wid = w.wid " .
-    "LEFT JOIN {workflow_states} ws ON w.wid = ws.wid " .
-    "LEFT JOIN {workflow_transitions} wt ON ws.sid = wt.sid " .
-    "WHERE ws.status = 1 AND wt.target_sid IS NOT NULL " .
-    "ORDER BY tm.type, ws.weight");
+    $result = db_query('SELECT tm.type, w.wid, w.name, ws.state, wt.tid, wt.sid, wt.target_sid ' .
+    'FROM {workflow_type_map} tm ' .
+    'LEFT JOIN {workflows} w ON tm.wid = w.wid ' .
+    'LEFT JOIN {workflow_states} ws ON w.wid = ws.wid ' .
+    'LEFT JOIN {workflow_transitions} wt ON ws.sid = wt.sid ' .
+    'WHERE ws.status = 1 AND wt.target_sid IS NOT NULL ' .
+    'ORDER BY tm.type, ws.weight');
   }
   foreach ($result as $data) {
     $pseudohooks['workflow-' . $data->type . '-' . $data->tid] =
@@ -195,7 +195,7 @@ function workflow_actions_trigger_info() {
 /**
  * Implements hook_workflow().
  *
- * @param $op
+ * @param $hook
  *   The current workflow operation: 'transition pre' or 'transition post'.
  * @param $old_state
  *   The state ID of the current state.
@@ -208,37 +208,38 @@ function workflow_actions_workflow($op, $old_state, $new_state, $node) {
   switch ($op) {
     case 'transition post':
       // A transition has occurred; fire off actions associated with this transition.
-      $transition = workflow_get_workflow_transitions_by_sid_target_sid($old_state, $new_state);
-      $op = 'workflow-' . $node->type . '-' . $transition->tid;
-      $aids = trigger_get_assigned_actions($op);
-      if ($aids) {
-        $context = array(
-        'hook' => 'workflow',
-        'op' => $op,
-        );
-        // We need to get the expected object if the action's type is not 'node'.
-        // We keep the object in $objects so we can reuse it if we have multiple actions
-        // that make changes to an object.
-        foreach ($aids as $aid => $action_info) {
-          if ($action_info['type'] != 'node') {
-            if (!isset($objects[$action_info['type']])) {
-              $objects[$action_info['type']] = _trigger_normalize_node_context($action_info['type'], $node);
+      if ($transition = workflow_get_workflow_transitions_by_sid_target_sid($old_state, $new_state) ) {
+        $hook = 'workflow-' . $node->type . '-' . $transition->tid;
+        $aids = trigger_get_assigned_actions($hook);
+        if ($aids) {
+          $context = array(
+          'hook' => $hook,
+          );
+          // We need to get the expected object if the action's type is not 'node'.
+          // We keep the object in $objects so we can reuse it if we have multiple actions
+          // that make changes to an object.
+          foreach ($aids as $aid => $action_info) {
+            if ($action_info['type'] != 'node') {
+              if (!isset($objects[$action_info['type']])) {
+                $objects[$action_info['type']] = _trigger_normalize_node_context($action_info['type'], $node);
+              }
+              // Since we know about the node, we pass that info along to the action.
+              $context['node'] = $node;
+              $result = actions_do($aid, $objects[$action_info['type']], $context);
             }
-            // Since we know about the node, we pass that info along to the action.
-            $context['node'] = $node;
-            $result = actions_do($aid, $objects[$action_info['type']], $context);
-          }
-          else {
-            actions_do($aid, $node, $context);
+            else {
+              actions_do($aid, $node, $context);
+            }
           }
         }
       }
     break;
     case 'transition delete':
-      $tid = $options['tid'];
-      $actions = workflow_actions_get_actions_by_tid($tid);
-      foreach ($actions as $aid) {
-        workflow_actions_remove($tid, $aid);
+      if ($transition = workflow_get_workflow_transitions_by_sid_target_sid($old_state, $new_state) ) {
+        $actions = workflow_actions_get_actions_by_tid($transition->tid);
+        foreach ($actions as $aid) {
+          workflow_actions_remove($transition->tid, $aid);
+        }
       }
     break;
   }
@@ -251,7 +252,7 @@ function workflow_actions_workflow($op, $old_state, $new_state, $node) {
 function workflow_actions_workflow_operations($level, $wid) {
   return array('workflow_overview_actions' => array(
     'title' => t('Actions'),
-    'href' => "admin/structure/trigger/workflow/$wid"),
+    'href' => 'admin/structure/trigger/workflow/' . $wid),
   );
 }
 
@@ -269,13 +270,13 @@ function workflow_actions_remove($tid, $aid) {
   $ops = array();
   foreach (workflow_actions_get_trigger_assignments_by_aid($aid) as $data) {
     // Transition ID is the last part, e.g., foo-bar-1.
-    $transition = array_pop(explode('-', $data->op));
+    $transition = array_pop(explode('-', $data->hook));
     if ($tid == $transition) {
-      $ops[] = $data->op;
+      $hooks[] = $data->hook;
     }
   }
-  foreach ($ops as $op) {
-    workflow_actions_delete_trigger_assignments_by_aid_op($aid, $op);
+  foreach ($hooks as $hook) {
+    workflow_actions_delete_trigger_assignments_by_aid_op($aid, $hook);
     foreach (workflow_actions_get_actions_by_aid($aid) as $action) {
       watchdog('workflow', 'Action %action has been unassigned.',
         array('%action' => $action->description));
@@ -291,7 +292,7 @@ function workflow_actions_remove($tid, $aid) {
  * Get all trigger assingments for workflow.
  */
 function workflow_actions_get_trigger_assignments() {
-  $results = db_query("SELECT op FROM {trigger_assignments} WHERE hook = 'workflow'");
+  $results = db_query('SELECT hook FROM {trigger_assignments} WHERE hook = "workflow"');
   return $results->fetchAll();
 }
 
@@ -299,7 +300,7 @@ function workflow_actions_get_trigger_assignments() {
  * Get all trigger assignements for workflow and a given action.
  */
 function workflow_actions_get_trigger_assignments_by_aid($aid) {
-  $results = db_query("SELECT op FROM {trigger_assignments} WHERE hook = 'workflow' AND aid = ':aid'", array(':aid' => $aid));
+  $results = db_query('SELECT hook FROM {trigger_assignments} WHERE hook = "workflow" AND aid = ":aid"', array(':aid' => $aid));
   return $results->fetchAll();
 }
 
@@ -307,14 +308,14 @@ function workflow_actions_get_trigger_assignments_by_aid($aid) {
  * Delete assignments, by action and operation.
  */
 function workflow_actions_delete_trigger_assignments_by_aid_op($aid, $op) {
-  return db_delete('trigger_assignments')->condition('hook', 'workflow')->condition('op', $op)->condition('aid', $aid)->execute();
+  return db_delete('trigger_assignments')->condition('hook', 'workflow')->condition('hook', $op)->condition('aid', $aid)->execute();
 }
 
 /**
  * Get a specific action.
  */
 function workflow_actions_get_actions_by_aid($aid) {
-  $results = db_query("SELECT * FROM {actions} WHERE aid = ':aid'", array(':aid' => $aid));
+  $results = db_query('SELECT * FROM {actions} WHERE aid = ":aid"', array(':aid' => $aid));
   return $results->fetchAll();
 }
 
@@ -326,13 +327,13 @@ function workflow_actions_get_actions_by_tid($tid) {
   $aids = array();
   foreach (workflow_actions_get_trigger_assignments() as $data) {
     // Transition ID is the last part, e.g., foo-bar-1.
-    $transition = array_pop(explode('-', $data->op));
+    $transition = array_pop(explode('-', $data->hook));
     if ($tid == $transition) {
-      // Specialized, TODO later
-      $results = db_query("SELECT aa.aid, a.type FROM {trigger_assignments} aa " .
-        "LEFT JOIN {actions} a ON aa.aid = a.aid " .
-        "WHERE aa.hook = 'workflow' AND aa.op = ':op' " .
-        "ORDER BY weight", array(':op' => $data->op));
+      // Specialized, TODO seprate this SQL out later
+      $results = db_query('SELECT aa.aid, a.type FROM {trigger_assignments} aa ' .
+        'LEFT JOIN {actions} a ON aa.aid = a.aid ' .
+        'WHERE aa.hook = ":hook" ' .
+        'ORDER BY weight', array(':hook' => $data->hook));
       foreach ($results as $action) {
         $aids[$action->aid]['type'] = $action->type;
       }

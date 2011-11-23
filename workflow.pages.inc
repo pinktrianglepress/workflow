@@ -22,7 +22,7 @@ function workflow_tab_page($node = NULL) {
   $current = workflow_node_current_state($node);
   // theme_workflow_current_state() must run state through check_plain().
   $current_state = theme('workflow_current_state', array('state_name' => $states[$current]));
-  $output = '<p>' . t('Current state: !state', array('!state' => $current_state)) . "</p>\n";
+  $output = t('Current state: !state', array('!state' => $current_state));
   $output .= drupal_render(drupal_get_form('workflow_tab_form', $node, $workflow->wid, $states, $current));
   $rows = array();
   foreach (workflow_get_workflow_node_history_by_nid($node->nid) as $history) {
@@ -133,7 +133,7 @@ function workflow_tab_form($form_id, $form_state, $node, $wid, $states, $current
     $timestamp = '';
     $comment = '';
     // See if scheduling information is present.
-    if (!empty($node->_workflow_scheduled_timestamp) && !empty($node->_workflow_scheduled_sid)) {
+    if (!empty($node->workflow_scheduled_timestamp) && !empty($node->workflow_scheduled_sid)) {
       global $user;
       if (variable_get('configurable_timezones', 1) && $user->uid && drupal_strlen($user->timezone)) {
         $timezone = $user->timezone;
@@ -142,9 +142,9 @@ function workflow_tab_form($form_id, $form_state, $node, $wid, $states, $current
         $timezone = variable_get('date_default_timezone', 0);
       }
       // The default value should be the upcoming sid.
-      $current = $node->_workflow_scheduled_sid;
-      $timestamp = $node->_workflow_scheduled_timestamp;
-      $comment = $node->_workflow_scheduled_comment;
+      $current = $node->workflow_scheduled_sid;
+      $timestamp = $node->workflow_scheduled_timestamp;
+      $comment = $node->workflow_scheduled_comment;
     }
     // Include the same form elements here that are included on a
     // regular node editing page. $form is modified by reference.
