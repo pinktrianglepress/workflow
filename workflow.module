@@ -36,9 +36,6 @@ define('WORKFLOW_CREATION', 1);
 define('WORKFLOW_CREATION_DEFAULT_WEIGHT', -50);
 define('WORKFLOW_DELETION', 0);
 
-// Include CTools integration functions and callbacks.
-include('workflow.ctools.inc');
-
 /**
  * Implements hook_permission().
  */
@@ -205,7 +202,7 @@ function workflow_tokens($type, $tokens, array $data = array(), array $options =
             $date = REQUEST_TIME;
             $user_name = $node->uid ? $node->name : variable_get('anonymous', 'Anonymous');
             $uid = $node->uid;
-            $mail = $node->uid ? $node->user_mail : '';
+            $mail = ($node->uid && isset($node->user_mail)) ? $node->user_mail : '';
             $comment = isset($node->workflow_comment) ? $node->workflow_comment : '';
           }
           elseif (!isset($node->workflow) && empty($last_history->sid)) {
@@ -221,7 +218,7 @@ function workflow_tokens($type, $tokens, array $data = array(), array $options =
             $date = REQUEST_TIME;
             $user_name = $node->uid ? $node->name : variable_get('anonymous', 'Anonymous');
             $uid = $node->uid;
-            $mail = $node->uid ? $node->user_mail : '';
+            $mail = ($node->uid && isset($node->user_mail)) ? $node->user_mail : '';
             $comment = isset($node->workflow_comment) ? $node->workflow_comment : '';
           }
           else {
@@ -237,8 +234,8 @@ function workflow_tokens($type, $tokens, array $data = array(), array $options =
             $mail = $account->uid ? $account->mail : '';
             $comment = $last_history->comment;
           }
-          $values['workflow-current-state-name']                =  $sid->name;
-          $values['workflow-old-state-name']                    =  $old_sid->name;
+          $values['workflow-current-state-name']                =  $sid->state;
+          $values['workflow-old-state-name']                    =  $old_sid->state;
           $values['workflow-current-state-date-iso']            =  date('Ymdhis', $date);
           $values['workflow-current-state-date-tstamp']         =  $date;
           $values['workflow-current-state-date-formatted']      =  date('M d, Y h:i:s', $date);
@@ -301,11 +298,10 @@ function workflow_token_info() {
   $tokens['workflow-current-state-log-entry'] =array(
     'name' => t('Last workflow comment log'),
     'description' => t('Last workflow comment log'),
-    'type' => 'workflow',
   );
   return array(
-    'types' => array('node' => $type),
-    'tokens' => array('node' => $tokens),
+    'types' => array('workflow' => $type),
+    'tokens' => array('workflow' => $tokens),
   );
 }
 
@@ -421,6 +417,20 @@ function workflow_comment_update($comment) {
 }
 
 /**
+ * Implements hook_features_api().
+ */
+function workflow_features_api() {
+  return array(
+    'workflow' => array(
+      'name' => t('Workflow'),
+      'file' => drupal_get_path('module', 'workflow') . '/workflow.features.inc',
+      'default_hook' => 'workflow_features_default_workflow',
+      'feature_source' => TRUE,
+    ),
+  );
+}
+
+/**
  * Business related functions, the API.
  */
  
@@ -513,7 +523,7 @@ function workflow_node_form(&$form, $form_state, $title, $name, $current, $choic
   else {
     $form['workflow'][$name] = array(
       '#type' => 'radios',
-      '#title' => $form['#wf']->options['name_as_title'] ? t('@title', array('@title' => $title)) : '',
+      '#title' => isset($form['#wf']->options['name_as_title']) ? t('@title', array('@title' => $title)) : '',
       '#options' => $choices,
       '#name' => $name,
       '#parents' => array('workflow'),
@@ -877,10 +887,29 @@ function workflow_get_workflows() {
 /**
  * Get a specific workflow, wid is a unique ID.
  */
-function workflow_get_workflows_by_wid($wid) {
+function workflow_get_workflows_by_wid($wid, $unserialize_options = TRUE) {
   $results = db_query('SELECT * FROM {workflows} WHERE wid = :wid', array(':wid' => $wid));
   if ($workflow = $results->fetchObject()) {
-    $workflow->options = unserialize($workflow->options);
+    if ($unserialize_options) {
+      $workflow->options = unserialize($workflow->options);
+    }
+    return $workflow;
+  }
+  return FALSE;
+}
+
+/**
+ * Get a specific workflow, name is a unique ID.
+ */
+function workflow_get_workflows_by_name($name, $unserialize_options = FALSE) {
+  $results = db_query('SELECT * FROM {workflows} WHERE name = :name', array(':name' => $name));
+  if ($workflow = $results->fetchObject()) {
+    // This is only called by CRUD functions in workflow.features.inc
+    // More than likely in prep for an import / export action.
+    // Therefore we don't want to fiddle with the response.
+    if ($unserialize_options) {
+      $workflow->options = unserialize($workflow->options);
+    }
     return $workflow;
   }
   return FALSE;
@@ -1106,20 +1135,21 @@ function workflow_update_workflow_transitions_roles($tid, $roles) {
  */
  
 /**
- * Get all states in the system, with options to filter.
+ * Get all states in the system, with options to filter, only where a workflow exists.
  */
 function workflow_get_workflow_states($options = array()) {
-  $query = 'SELECT * FROM {workflow_states} WHERE 1=1 ';
+  $query = 'SELECT * FROM {workflow_states} ws '.
+    'LEFT JOIN {workflows} w ON ws.wid = w.wid WHERE 1=1 ';
   $query_array = array();
   if (isset($options['sysid'])) {
     $query_array[':sysid'] = $options['sysid'];
-    $query .= 'AND sysid = :sysid ';
+    $query .= 'AND ws.sysid = :sysid ';
   }
   if (isset($options['status'])) {
     $query_array[':status'] = $options['status'];
-    $query .= 'AND status = :status ';
+    $query .= 'AND ws.status = :status ';
   }
-  $query .= 'ORDER BY wid, weight';
+  $query .= 'ORDER BY ws.wid, ws.weight';
   $results = db_query($query, $query_array);
   return $results->fetchAll();
 }
@@ -1151,9 +1181,18 @@ function workflow_get_workflow_states_by_sid($sid, $options = array()) {
 }
 
 /**
+ * Given a wid and state, return a state. Wids / states are a unique id.
+ */
+function workflow_get_workflow_states_by_wid_state($wid, $state) {
+  $results = db_query('SELECT * FROM {workflow_states} WHERE wid = :wid AND state = :state',
+    array(':wid' => $wid, ':state' => $state));
+  return $results->fetchObject();
+}
+
+/**
  * Given a sid, delete the state and all associated data.
  */
-function workflow_delete_workflow_states_by_sid($sid, $new_sid = FALSE) {
+function workflow_delete_workflow_states_by_sid($sid, $new_sid = FALSE, $true_delete = FALSE) {
   // Notify interested modules. We notify first to allow access to data before we zap it.
   module_invoke_all('workflow', 'state delete', $sid, NULL, NULL);
   // Re-parent any nodes that we don't want to orphan.
@@ -1193,8 +1232,12 @@ function workflow_delete_workflow_states_by_sid($sid, $new_sid = FALSE) {
   // Delete the state. -- We don't actually delete, just deactivate.
   // This is a matter up for some debate, to delete or not to delete, since this
   // causes name conflicts for states. In the meantime, we just stick with what we know.
-  // db_delete('workflow_states')->condition('sid', $sid)->execute();
-  db_update('workflow_states')->fields(array('status' => 0,))->condition('sid', $sid, '=')->execute();
+  if ($true_delete) {
+    db_delete('workflow_states')->condition('sid', $sid)->execute();
+  }
+  else {
+    db_update('workflow_states')->fields(array('status' => 0,))->condition('sid', $sid, '=')->execute();
+  }
 }
 
 /**
